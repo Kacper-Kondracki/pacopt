@@ -866,7 +866,6 @@ dependencies = [
  "color-eyre",
  "eyre",
  "ratatui",
- "thiserror 2.0.18",
 ]
 
 [[package]]
