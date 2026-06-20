@@ -9,6 +9,42 @@ use ratatui::widgets::{
 use crate::app::{App, AppView};
 use crate::model::{MissingOptionalDep, OptionalDep, PackageInfo};
 
+const BENEFIT_REASON_KEYWORDS: &[&str] = &[
+    "fast",
+    "faster",
+    "speed",
+    "performance",
+    "accelerated",
+    "acceleration",
+    "better",
+    "improved",
+    "improvement",
+    "enhanced",
+    "safer",
+    "safe",
+    "secure",
+    "security",
+    "sandbox",
+    "sandboxed",
+];
+const ALTERNATIVE_REASON_KEYWORDS: &[&str] = &[
+    "replacement",
+    "replace",
+    "replaces",
+    "alternative",
+    "alternate",
+    "instead",
+    "fallback",
+    "substitute",
+    "drop-in",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionalReasonSignal {
+    Benefit,
+    Alternative,
+}
+
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let [search_area, content_area, help_area] = Layout::default()
@@ -247,15 +283,11 @@ fn missing_optional_dep_list_item(
     range_selected: bool,
 ) -> ListItem<'static> {
     let checkbox = if checked { "[x]" } else { "[ ]" };
+    let signals = optional_reason_signals(dep);
     let mut spans = vec![
         Span::styled(checkbox, Style::default().fg(Color::Cyan)),
         Span::raw(" "),
-        Span::styled(
-            dep.name.clone(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(dep.name.clone(), missing_optional_dep_name_style(&signals)),
     ];
 
     if let Some(version) = &dep.version {
@@ -271,6 +303,7 @@ fn missing_optional_dep_list_item(
         format!("wanted by {}", dep.wanted_by.len()),
         Style::default().fg(Color::DarkGray),
     ));
+    spans.extend(reason_signal_spans(&signals));
 
     let item = ListItem::new(Line::from(spans));
     if range_selected {
@@ -308,8 +341,20 @@ fn missing_optional_dep_details(dep: &MissingOptionalDep) -> Vec<Line<'static>> 
         Line::from("Wanted by:"),
     ];
 
+    let signals = optional_reason_signals(dep);
+    if !signals.is_empty() {
+        let mut signal_spans = vec![Span::styled(
+            "Signals:",
+            Style::default().fg(Color::DarkGray),
+        )];
+        signal_spans.extend(reason_signal_spans(&signals));
+        lines.push(Line::from(""));
+        lines.push(Line::from(signal_spans));
+        lines.push(Line::from(""));
+    }
+
     for requester in &dep.wanted_by {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::raw("  "),
             Span::styled(
                 requester.package_name.clone(),
@@ -317,10 +362,119 @@ fn missing_optional_dep_details(dep: &MissingOptionalDep) -> Vec<Line<'static>> 
             ),
             Span::raw(": "),
             Span::from(requester.reason.clone()),
-        ]));
+        ];
+        spans.extend(reason_signal_spans(&reason_signals(&requester.reason)));
+        lines.push(Line::from(spans));
     }
 
     lines
+}
+
+fn optional_reason_signals(dep: &MissingOptionalDep) -> Vec<OptionalReasonSignal> {
+    collect_reason_signals(
+        dep.wanted_by
+            .iter()
+            .flat_map(|requester| reason_signals(&requester.reason)),
+    )
+}
+
+fn reason_signals(reason: &str) -> Vec<OptionalReasonSignal> {
+    let mut signals = Vec::new();
+
+    if contains_any_keyword(reason, BENEFIT_REASON_KEYWORDS) {
+        signals.push(OptionalReasonSignal::Benefit);
+    }
+    if contains_any_keyword(reason, ALTERNATIVE_REASON_KEYWORDS) {
+        signals.push(OptionalReasonSignal::Alternative);
+    }
+
+    signals
+}
+
+fn collect_reason_signals(
+    signals: impl IntoIterator<Item = OptionalReasonSignal>,
+) -> Vec<OptionalReasonSignal> {
+    let mut collected = Vec::new();
+
+    for signal in signals {
+        if !collected.contains(&signal) {
+            collected.push(signal);
+        }
+    }
+
+    collected
+}
+
+fn contains_any_keyword(reason: &str, keywords: &[&str]) -> bool {
+    keywords
+        .iter()
+        .any(|keyword| contains_keyword(reason, keyword))
+}
+
+fn contains_keyword(reason: &str, keyword: &str) -> bool {
+    let reason = reason.to_lowercase();
+    let keyword = keyword.to_lowercase();
+
+    reason.match_indices(&keyword).any(|(start, _)| {
+        let end = start + keyword.len();
+        let before_is_boundary = reason[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !is_keyword_character(character));
+        let after_is_boundary = reason[end..]
+            .chars()
+            .next()
+            .is_none_or(|character| !is_keyword_character(character));
+
+        before_is_boundary && after_is_boundary
+    })
+}
+
+fn is_keyword_character(character: char) -> bool {
+    character.is_alphanumeric()
+}
+
+fn missing_optional_dep_name_style(signals: &[OptionalReasonSignal]) -> Style {
+    let color = if signals.contains(&OptionalReasonSignal::Alternative) {
+        Color::Magenta
+    } else if signals.contains(&OptionalReasonSignal::Benefit) {
+        Color::Green
+    } else {
+        Color::White
+    };
+
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+fn reason_signal_spans(signals: &[OptionalReasonSignal]) -> Vec<Span<'static>> {
+    signals
+        .iter()
+        .flat_map(|signal| {
+            [
+                Span::raw(" "),
+                Span::styled(
+                    format!("[{}]", signal.label()),
+                    signal.style().add_modifier(Modifier::BOLD),
+                ),
+            ]
+        })
+        .collect()
+}
+
+impl OptionalReasonSignal {
+    fn label(self) -> &'static str {
+        match self {
+            OptionalReasonSignal::Benefit => "benefit",
+            OptionalReasonSignal::Alternative => "alternative",
+        }
+    }
+
+    fn style(self) -> Style {
+        match self {
+            OptionalReasonSignal::Benefit => Style::default().fg(Color::Green),
+            OptionalReasonSignal::Alternative => Style::default().fg(Color::Magenta),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +576,47 @@ mod tests {
         assert!(rendered.contains(&"SQL database server".to_owned()));
         assert!(rendered.contains(&"  alpha: database support".to_owned()));
         assert!(rendered.contains(&"  beta: mysql backend".to_owned()));
+    }
+
+    #[test]
+    fn missing_optional_dep_details_include_reason_signal_tags() {
+        let dep = MissingOptionalDep {
+            name: "ripgrep-all".to_owned(),
+            version: None,
+            description: None,
+            wanted_by: vec![
+                OptionalDepRequester {
+                    package_name: "alpha".to_owned(),
+                    reason: "faster archive scanning".to_owned(),
+                },
+                OptionalDepRequester {
+                    package_name: "beta".to_owned(),
+                    reason: "drop-in replacement backend".to_owned(),
+                },
+            ],
+        };
+
+        let rendered = missing_optional_dep_details(&dep)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(rendered.contains(&"Signals: [benefit] [alternative]".to_owned()));
+        assert!(rendered.contains(&"  alpha: faster archive scanning [benefit]".to_owned()));
+        assert!(rendered.contains(&"  beta: drop-in replacement backend [alternative]".to_owned()));
+    }
+
+    #[test]
+    fn reason_signal_matching_uses_keyword_boundaries() {
+        assert_eq!(
+            reason_signals("use a safer sandbox"),
+            vec![OptionalReasonSignal::Benefit]
+        );
+        assert_eq!(
+            reason_signals("alternative implementation"),
+            vec![OptionalReasonSignal::Alternative]
+        );
+        assert!(reason_signals("unsafe compatibility mode").is_empty());
     }
 
     #[test]
