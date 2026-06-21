@@ -11,6 +11,11 @@ use crate::model::{
 const IGNORED_MISSING_OPTIONAL_DEP_PREFIXES: &[&str] = &["tesseract-data-", "tesarract-data-"];
 const IGNORED_MISSING_OPTIONAL_DEPS: &[&str] = &["tesseract-data", "tesarract-data"];
 
+enum OptionalDepResolution {
+    Resolved(MissingOptionalDep),
+    Unresolved,
+}
+
 pub(crate) fn load_package_data() -> Result<(Vec<PackageInfo>, Vec<MissingOptionalDep>)> {
     let alpm = Alpm::new("/", "/var/lib/pacman")?;
     register_syncdbs(&alpm);
@@ -78,15 +83,31 @@ fn missing_optional_deps_from_packages_and_syncdbs(
     syncdbs: &alpm::AlpmList<'_, &alpm::Db>,
 ) -> Vec<MissingOptionalDep> {
     missing_optional_deps_from_packages_with_resolver(packages, |dep| {
-        syncdbs
-            .find_satisfier(dep.name.as_str())
-            .map(|pkg| MissingOptionalDep {
-                name: pkg.name().to_owned(),
-                version: Some(pkg.version().to_string()),
-                description: pkg.desc().map(str::to_owned),
-                wanted_by: Vec::new(),
-            })
+        Some(
+            syncdbs
+                .find_satisfier(dep.name.as_str())
+                .map(|pkg| OptionalDepResolution::Resolved(sync_missing_optional_dep(pkg)))
+                .unwrap_or(OptionalDepResolution::Unresolved),
+        )
     })
+}
+
+fn unresolved_missing_optional_dep(dep: &OptionalDep) -> MissingOptionalDep {
+    MissingOptionalDep {
+        name: dep.name.clone(),
+        version: None,
+        description: None,
+        wanted_by: Vec::new(),
+    }
+}
+
+fn sync_missing_optional_dep(pkg: &alpm::Package) -> MissingOptionalDep {
+    MissingOptionalDep {
+        name: pkg.name().to_owned(),
+        version: Some(pkg.version().to_string()),
+        description: pkg.desc().map(str::to_owned),
+        wanted_by: Vec::new(),
+    }
 }
 
 fn resolve_installed_optional_dep(
@@ -131,7 +152,7 @@ fn missing_optional_deps_from_packages_with_resolver<F>(
     mut resolve: F,
 ) -> Vec<MissingOptionalDep>
 where
-    F: FnMut(&OptionalDep) -> Option<MissingOptionalDep>,
+    F: FnMut(&OptionalDep) -> Option<OptionalDepResolution>,
 {
     let mut deps = BTreeMap::<String, MissingOptionalDep>::new();
 
@@ -141,12 +162,11 @@ where
             .iter()
             .filter(|dep| dep.installed_package.is_none())
         {
-            let mut resolved = resolve(dep).unwrap_or_else(|| MissingOptionalDep {
-                name: dep.name.clone(),
-                version: None,
-                description: None,
-                wanted_by: Vec::new(),
-            });
+            let mut resolved = match resolve(dep) {
+                Some(OptionalDepResolution::Resolved(resolved)) => resolved,
+                Some(OptionalDepResolution::Unresolved) => continue,
+                None => unresolved_missing_optional_dep(dep),
+            };
             if is_ignored_missing_optional_dep(&resolved.name) {
                 continue;
             }
@@ -316,5 +336,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["zlib", "sqlite"]
         );
+    }
+
+    #[test]
+    fn missing_optional_deps_skip_unresolved_syncdb_dependencies() {
+        let packages = vec![PackageInfo {
+            name: "example".to_owned(),
+            version: "1.0.0".to_owned(),
+            description: None,
+            optional_deps: vec![
+                OptionalDep {
+                    name: "zlib".to_owned(),
+                    optional_for: "compression".to_owned(),
+                    installed_package: None,
+                },
+                OptionalDep {
+                    name: "journalctl-desktop-notification".to_owned(),
+                    optional_for: "desktop notifications".to_owned(),
+                    installed_package: None,
+                },
+            ],
+        }];
+
+        let missing = missing_optional_deps_from_packages_with_resolver(&packages, |dep| {
+            Some(match dep.name.as_str() {
+                "zlib" => OptionalDepResolution::Resolved(MissingOptionalDep {
+                    name: dep.name.clone(),
+                    version: Some("1.3.1-2".to_owned()),
+                    description: Some("Compression library".to_owned()),
+                    wanted_by: Vec::new(),
+                }),
+                _ => OptionalDepResolution::Unresolved,
+            })
+        });
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "zlib");
     }
 }
