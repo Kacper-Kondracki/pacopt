@@ -12,10 +12,20 @@ use crate::model::{MissingOptionalDep, OptionalDep, PackageInfo};
 const BENEFIT_REASON_KEYWORDS: &[&str] = &[
     "fast",
     "faster",
+    "quick",
+    "quicker",
     "speed",
     "performance",
     "accelerated",
     "acceleration",
+    "efficient",
+    "efficiency",
+    "optimized",
+    "optimised",
+    "optimize",
+    "optimise",
+    "optimization",
+    "optimisation",
     "better",
     "improved",
     "improvement",
@@ -31,12 +41,17 @@ const ALTERNATIVE_REASON_KEYWORDS: &[&str] = &[
     "replacement",
     "replace",
     "replaces",
+    "replacing",
     "alternative",
     "alternate",
     "instead",
     "fallback",
     "substitute",
+    "substitutes",
+    "substitution",
     "drop-in",
+    "drop in",
+    "dropin",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -613,10 +628,50 @@ mod tests {
             vec![OptionalReasonSignal::Benefit]
         );
         assert_eq!(
+            reason_signals("more memory-efficient backend"),
+            vec![OptionalReasonSignal::Benefit]
+        );
+        assert_eq!(
+            reason_signals("optimized and quicker search"),
+            vec![OptionalReasonSignal::Benefit]
+        );
+        assert_eq!(
+            reason_signals("simd-optimized decoding"),
+            vec![OptionalReasonSignal::Benefit]
+        );
+        assert_eq!(
+            reason_signals("gpu-accelerated rendering"),
+            vec![OptionalReasonSignal::Benefit]
+        );
+        assert_eq!(
             reason_signals("alternative implementation"),
             vec![OptionalReasonSignal::Alternative]
         );
+        assert_eq!(
+            reason_signals("replacing default backend"),
+            vec![OptionalReasonSignal::Alternative]
+        );
+        assert_eq!(
+            reason_signals("substitution for legacy parser"),
+            vec![OptionalReasonSignal::Alternative]
+        );
+        assert_eq!(
+            reason_signals("substitutes the bundled renderer"),
+            vec![OptionalReasonSignal::Alternative]
+        );
+        assert_eq!(
+            reason_signals("drop in implementation"),
+            vec![OptionalReasonSignal::Alternative]
+        );
+        assert_eq!(
+            reason_signals("dropin implementation"),
+            vec![OptionalReasonSignal::Alternative]
+        );
         assert!(reason_signals("unsafe compatibility mode").is_empty());
+        assert!(reason_signals("unoptimized build").is_empty());
+        assert!(reason_signals("irreplaceable package").is_empty());
+        assert!(reason_signals("dropinside helper").is_empty());
+        assert!(reason_signals("substitutability check").is_empty());
     }
 
     #[test]
