@@ -1,3 +1,8 @@
+//! Application state and event handling.
+//!
+//! `App` owns the package data, current selections, search state, and list
+//! navigation state used by the terminal UI.
+
 use std::collections::BTreeSet;
 use std::io;
 
@@ -14,6 +19,7 @@ use crate::model::{MissingOptionalDep, PackageInfo};
 use crate::pacman;
 use crate::runtime::{MouseCaptureGuard, Msg, Runtime};
 
+/// Terminal application state for browsing packages and missing optional dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
     pub(crate) packages: Vec<PackageInfo>,
@@ -31,24 +37,32 @@ pub struct App {
     running: bool,
 }
 
+/// Main list currently controlled by keyboard, mouse, and search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppView {
+    /// Installed package list.
     Packages,
+    /// Missing optional dependency list.
     MissingOptionalDeps,
 }
 
+/// Inclusive selection range in the filtered missing-dependency list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SelectionRange {
     anchor: usize,
     head: usize,
 }
 
+/// Check-state action applied during mouse drag selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CheckAction {
+    /// Mark entries as checked.
     Check,
+    /// Mark entries as unchecked.
     Uncheck,
 }
 
+/// Mouse coordinates captured from crossterm events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MousePosition {
     column: u16,
@@ -56,6 +70,7 @@ pub(crate) struct MousePosition {
 }
 
 impl App {
+    /// Loads package data from pacman and creates an application state.
     pub fn load() -> Result<Self> {
         let (packages, missing_optional_deps) = pacman::load_package_data()?;
 
@@ -65,12 +80,18 @@ impl App {
         ))
     }
 
+    /// Creates an application state from installed package data.
+    ///
+    /// Missing optional dependencies are derived from `packages` without
+    /// consulting sync databases, so version and description metadata are not
+    /// populated for missing dependencies.
     pub fn new(packages: Vec<PackageInfo>) -> Self {
         let missing_optional_deps = pacman::missing_optional_deps_from_packages(&packages);
 
         Self::with_missing_optional_deps(packages, missing_optional_deps)
     }
 
+    /// Creates an application state from precomputed package and missing-dependency data.
     pub fn with_missing_optional_deps(
         packages: Vec<PackageInfo>,
         missing_optional_deps: Vec<MissingOptionalDep>,
@@ -103,6 +124,10 @@ impl App {
         }
     }
 
+    /// Runs the draw and input loop until the user quits.
+    ///
+    /// The returned vector contains the checked missing optional dependency
+    /// names in sorted order.
     pub fn run<B>(&mut self, terminal: &mut Terminal<B>) -> Result<Vec<String>>
     where
         B: Backend<Error = io::Error>,
@@ -118,6 +143,7 @@ impl App {
         Ok(self.checked_missing_optional_dep_names())
     }
 
+    /// Applies one input or control message to the application state.
     pub fn update(&mut self, msg: Msg) {
         match msg {
             Msg::Key(key) => self.handle_key(key),
@@ -129,14 +155,17 @@ impl App {
         }
     }
 
+    /// Returns all installed packages currently loaded in the app.
     pub fn packages(&self) -> &[PackageInfo] {
         &self.packages
     }
 
+    /// Returns all missing optional dependencies currently loaded in the app.
     pub fn missing_optional_deps(&self) -> &[MissingOptionalDep] {
         &self.missing_optional_deps
     }
 
+    /// Returns checked missing optional dependency names in sorted order.
     pub fn checked_missing_optional_dep_names(&self) -> Vec<String> {
         self.checked_missing_optional_deps
             .iter()
@@ -144,6 +173,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Returns the selected package after applying the current search filter.
     pub fn selected_package(&self) -> Option<&PackageInfo> {
         let selected = self.package_list_state.selected()?;
         let package_index = self.filtered_package_indices().get(selected).copied()?;
@@ -151,6 +181,7 @@ impl App {
         self.packages.get(package_index)
     }
 
+    /// Returns the selected missing optional dependency after applying the current search filter.
     pub fn selected_missing_optional_dep(&self) -> Option<&MissingOptionalDep> {
         let selected = self.missing_optional_dep_list_state.selected()?;
         let index = self
@@ -161,6 +192,7 @@ impl App {
         self.missing_optional_deps.get(index)
     }
 
+    /// Returns the selected index in the active filtered list.
     pub(crate) fn active_selected_index(&self) -> Option<usize> {
         match self.active_view {
             AppView::Packages => self.package_list_state.selected(),
@@ -168,6 +200,7 @@ impl App {
         }
     }
 
+    /// Moves selection to the next item in the active filtered list.
     pub(crate) fn select_next(&mut self) {
         if self.mouse_drag_check_action.is_some() {
             self.scroll_active_list_offset(1);
@@ -183,6 +216,7 @@ impl App {
         }
     }
 
+    /// Moves selection to the previous item in the active filtered list.
     pub(crate) fn select_previous(&mut self) {
         if self.mouse_drag_check_action.is_some() {
             self.scroll_active_list_offset(-1);
@@ -200,6 +234,7 @@ impl App {
             .select(Some(selected.saturating_sub(1)));
     }
 
+    /// Returns mutable list state for the active view.
     pub(crate) fn active_list_state(&mut self) -> &mut ListState {
         match self.active_view {
             AppView::Packages => &mut self.package_list_state,
@@ -223,6 +258,7 @@ impl App {
         self.apply_held_mouse_drag_at_current_position();
     }
 
+    /// Returns the number of items visible in the active list after filtering.
     pub(crate) fn active_filtered_len(&self) -> usize {
         match self.active_view {
             AppView::Packages => self.filtered_package_indices().len(),
@@ -230,6 +266,7 @@ impl App {
         }
     }
 
+    /// Returns package references that match the current search query.
     pub(crate) fn filtered_packages(&self) -> Vec<&PackageInfo> {
         self.filtered_package_indices()
             .into_iter()
@@ -237,6 +274,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Returns indices of packages that match the current search query.
     pub(crate) fn filtered_package_indices(&self) -> Vec<usize> {
         let query = self.search_query.trim();
 
@@ -253,6 +291,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Returns missing optional dependency references that match the current search query.
     pub(crate) fn filtered_missing_optional_deps(&self) -> Vec<&MissingOptionalDep> {
         self.filtered_missing_optional_dep_indices()
             .into_iter()
@@ -260,6 +299,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Returns indices of missing optional dependencies that match the current search query.
     pub(crate) fn filtered_missing_optional_dep_indices(&self) -> Vec<usize> {
         let query = self.search_query.trim();
 
@@ -276,6 +316,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Applies a keyboard event to the current app mode.
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         if self.search_active {
             self.handle_search_key(key);
@@ -334,6 +375,7 @@ impl App {
         }
     }
 
+    /// Applies a mouse event to list selection, scrolling, or checking.
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => self.handle_left_mouse_down(mouse),
@@ -415,6 +457,7 @@ impl App {
         self.mouse_drag_position = None;
     }
 
+    /// Switches between the installed-package list and missing-dependency list.
     pub(crate) fn switch_view(&mut self) {
         self.clear_mouse_drag_check_action();
         self.active_view = match self.active_view {
@@ -425,6 +468,7 @@ impl App {
         self.sync_selection_to_filter();
     }
 
+    /// Toggles the selected missing dependency or selected missing-dependency range.
     pub(crate) fn toggle_selected_missing_optional_dep_checked(&mut self) {
         if self.active_view != AppView::MissingOptionalDeps {
             return;
@@ -519,6 +563,11 @@ impl App {
         }
     }
 
+    /// Extends the active selection range by one position.
+    ///
+    /// In the package view this behaves like normal directional selection. In
+    /// the missing-dependency view it creates or extends a range that can be
+    /// toggled as a group.
     pub(crate) fn extend_missing_optional_dep_range(&mut self, direction: isize) {
         if self.mouse_drag_check_action.is_some() {
             self.scroll_active_list_offset(direction);
@@ -579,6 +628,7 @@ impl App {
         self.missing_optional_dep_list_state.select(Some(head));
     }
 
+    /// Returns dependency names included in the current filtered range selection.
     pub(crate) fn selected_missing_optional_dep_range_names(&self) -> Vec<String> {
         let Some(range) = self.selected_missing_optional_dep_range else {
             return Vec::new();
@@ -594,6 +644,7 @@ impl App {
             .collect::<Vec<_>>()
     }
 
+    /// Returns `true` when a filtered missing-dependency position is range-selected.
     pub(crate) fn is_missing_optional_dep_position_in_range(&self, position: usize) -> bool {
         self.selected_missing_optional_dep_range
             .is_some_and(|range| range.contains(position))
@@ -670,6 +721,7 @@ impl App {
 }
 
 impl AppView {
+    /// Returns the short label shown next to the search prompt.
     pub(crate) fn label(self) -> &'static str {
         match self {
             AppView::Packages => "[packages]",

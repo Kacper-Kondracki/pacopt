@@ -1,3 +1,10 @@
+//! Pacman and libalpm access helpers.
+//!
+//! This module is the boundary between the application and the pacman package
+//! databases. It loads installed package data, resolves optional dependency
+//! satisfiers, and builds the list of missing optional dependencies shown by
+//! the UI.
+
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -11,11 +18,20 @@ use crate::model::{
 const IGNORED_MISSING_OPTIONAL_DEP_PREFIXES: &[&str] = &["tesseract-data-", "tesarract-data-"];
 const IGNORED_MISSING_OPTIONAL_DEPS: &[&str] = &["tesseract-data", "tesarract-data"];
 
+/// Result of trying to resolve a missing optional dependency against sync databases.
 enum OptionalDepResolution {
+    /// The dependency exists in a sync database and can be shown with package metadata.
     Resolved(MissingOptionalDep),
+    /// The dependency could not be resolved and should be hidden from sync-backed results.
     Unresolved,
 }
 
+/// Loads installed packages and missing optional dependency suggestions from pacman.
+///
+/// The local pacman database is read from `/var/lib/pacman`, and sync
+/// databases are registered from `/var/lib/pacman/sync` when they are present.
+/// Missing optional dependencies are resolved against the sync databases so
+/// the UI can show versions and descriptions for installable packages.
 pub(crate) fn load_package_data() -> Result<(Vec<PackageInfo>, Vec<MissingOptionalDep>)> {
     let alpm = Alpm::new("/", "/var/lib/pacman")?;
     register_syncdbs(&alpm);
@@ -55,6 +71,11 @@ pub(crate) fn load_package_data() -> Result<(Vec<PackageInfo>, Vec<MissingOption
     Ok((packages, missing_optional_deps))
 }
 
+/// Registers all available local sync databases with libalpm.
+///
+/// Missing or unreadable sync database directories are ignored. A missing sync
+/// database only affects package metadata enrichment for missing dependencies;
+/// installed package scanning still works.
 fn register_syncdbs(alpm: &Alpm) {
     let Ok(entries) = fs::read_dir("/var/lib/pacman/sync") else {
         return;
@@ -72,12 +93,22 @@ fn register_syncdbs(alpm: &Alpm) {
     }
 }
 
+/// Builds missing optional dependency suggestions from already-loaded packages.
+///
+/// This variant does not consult sync databases, so returned dependencies only
+/// contain names and requester information. It is used by tests and callers
+/// that already have package data.
 pub(crate) fn missing_optional_deps_from_packages(
     packages: &[PackageInfo],
 ) -> Vec<MissingOptionalDep> {
     missing_optional_deps_from_packages_with_resolver(packages, |_| None)
 }
 
+/// Builds missing optional dependency suggestions and enriches them from sync databases.
+///
+/// Dependencies that cannot be resolved in a sync database are skipped. This
+/// avoids suggesting virtual names or provider-only requirements that pacman
+/// cannot install directly by that name.
 fn missing_optional_deps_from_packages_and_syncdbs(
     packages: &[PackageInfo],
     syncdbs: &alpm::AlpmList<'_, &alpm::Db>,
@@ -92,6 +123,7 @@ fn missing_optional_deps_from_packages_and_syncdbs(
     })
 }
 
+/// Creates a missing dependency record when no sync package metadata is available.
 fn unresolved_missing_optional_dep(dep: &OptionalDep) -> MissingOptionalDep {
     MissingOptionalDep {
         name: dep.name.clone(),
@@ -101,6 +133,7 @@ fn unresolved_missing_optional_dep(dep: &OptionalDep) -> MissingOptionalDep {
     }
 }
 
+/// Converts a sync database package into a missing optional dependency record.
 fn sync_missing_optional_dep(pkg: &alpm::Package) -> MissingOptionalDep {
     MissingOptionalDep {
         name: pkg.name().to_owned(),
@@ -110,6 +143,12 @@ fn sync_missing_optional_dep(pkg: &alpm::Package) -> MissingOptionalDep {
     }
 }
 
+/// Finds the installed package that satisfies an optional dependency.
+///
+/// The lookup first asks libalpm for a direct satisfier of the dependency
+/// requirement. If that fails, it also accepts installed packages that conflict
+/// with or replace the requested dependency name, which handles common package
+/// rename or provider cases.
 fn resolve_installed_optional_dep(
     local_packages: &alpm::AlpmList<'_, &alpm::Package>,
     dep: &Dep,
@@ -121,6 +160,7 @@ fn resolve_installed_optional_dep(
         .map(installed_package_from_alpm)
 }
 
+/// Finds an installed package that should be treated as replacing the dependency.
 fn find_installed_replacement<'a>(
     local_packages: &alpm::AlpmList<'_, &'a alpm::Package>,
     dep: &Dep,
@@ -136,10 +176,12 @@ fn find_installed_replacement<'a>(
     })
 }
 
+/// Returns `true` when two libalpm dependency names refer to the same package name.
 pub(crate) fn dep_names_match(candidate: &Dep, requested: &Dep) -> bool {
     candidate.name() == requested.name()
 }
 
+/// Converts a libalpm package into the small installed-package model used by the UI.
 fn installed_package_from_alpm(pkg: &alpm::Package) -> InstalledPackage {
     InstalledPackage {
         name: pkg.name().to_owned(),
@@ -147,6 +189,10 @@ fn installed_package_from_alpm(pkg: &alpm::Package) -> InstalledPackage {
     }
 }
 
+/// Groups uninstalled optional dependencies by dependency name.
+///
+/// Each missing dependency is listed once with all packages that requested it.
+/// Results are sorted by requester count descending and then by dependency name.
 fn missing_optional_deps_from_packages_with_resolver<F>(
     packages: &[PackageInfo],
     mut resolve: F,
@@ -205,6 +251,11 @@ where
     deps
 }
 
+/// Returns `true` for optional dependency names that should not be suggested.
+///
+/// Tesseract language data packages are intentionally ignored because package
+/// metadata commonly requests broad language-data names that are not useful as
+/// general install suggestions.
 fn is_ignored_missing_optional_dep(name: &str) -> bool {
     IGNORED_MISSING_OPTIONAL_DEPS.contains(&name)
         || IGNORED_MISSING_OPTIONAL_DEP_PREFIXES
@@ -212,6 +263,7 @@ fn is_ignored_missing_optional_dep(name: &str) -> bool {
             .any(|prefix| name.starts_with(prefix))
 }
 
+/// Formats a libalpm dependency with its version constraint.
 fn dep_requirement(dep: &Dep) -> String {
     match dep.depmod() {
         DepMod::Any => dep.name().to_owned(),
