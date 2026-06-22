@@ -60,6 +60,9 @@ enum OptionalReasonSignal {
     Alternative,
 }
 
+const LIST_BLOCK_BORDER_WIDTH: u16 = 2;
+const LIST_HIGHLIGHT_SYMBOL_WIDTH: u16 = 2;
+
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let [search_area, content_area, help_area] = Layout::default()
@@ -70,15 +73,26 @@ impl Widget for &mut App {
                 Constraint::Length(1),
             ])
             .areas(area);
-        let [list_area, details_area] = Layout::default()
+        let [max_list_area, _] = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .areas(content_area);
-        self.last_list_area = Some(list_area);
-
-        let items = self.active_items();
-        let details = self.details();
         let title = self.active_title();
+        let signal_column_width = self.active_list_signal_column_width();
+        let list_area = Rect {
+            width: self.active_list_pane_width(max_list_area.width, &title, signal_column_width),
+            ..max_list_area
+        };
+        let details_area = Rect {
+            x: list_area.x.saturating_add(list_area.width),
+            width: content_area.width.saturating_sub(list_area.width),
+            ..content_area
+        };
+        self.last_list_area = Some(list_area);
+        let list_item_width = list_item_width(list_area, self.active_list_has_selection());
+
+        let items = self.active_items(list_item_width, signal_column_width);
+        let details = self.details();
         let search_style = if self.search_active {
             Style::default().fg(Color::Cyan)
         } else {
@@ -137,10 +151,16 @@ impl Widget for &mut App {
 }
 
 impl App {
-    fn active_items(&self) -> Vec<ListItem<'static>> {
+    fn active_items(
+        &self,
+        list_item_width: usize,
+        signal_column_width: usize,
+    ) -> Vec<ListItem<'static>> {
         match self.active_view {
             AppView::Packages => self.package_items(),
-            AppView::MissingOptionalDeps => self.missing_optional_dep_items(),
+            AppView::MissingOptionalDeps => {
+                self.missing_optional_dep_items(list_item_width, signal_column_width)
+            }
         }
     }
 
@@ -151,7 +171,11 @@ impl App {
             .collect::<Vec<_>>()
     }
 
-    fn missing_optional_dep_items(&self) -> Vec<ListItem<'static>> {
+    fn missing_optional_dep_items(
+        &self,
+        list_item_width: usize,
+        signal_column_width: usize,
+    ) -> Vec<ListItem<'static>> {
         self.filtered_missing_optional_deps()
             .into_iter()
             .enumerate()
@@ -160,6 +184,8 @@ impl App {
                     dep,
                     self.checked_missing_optional_deps.contains(&dep.name),
                     self.is_missing_optional_dep_position_in_range(position),
+                    list_item_width,
+                    signal_column_width,
                 )
             })
             .collect::<Vec<_>>()
@@ -211,10 +237,98 @@ impl App {
             Span::styled(cursor, Style::default().fg(Color::Cyan)),
         ])
     }
+
+    fn active_list_has_selection(&self) -> bool {
+        match self.active_view {
+            AppView::Packages => self.package_list_state.selected().is_some(),
+            AppView::MissingOptionalDeps => {
+                self.missing_optional_dep_list_state.selected().is_some()
+            }
+        }
+    }
+
+    fn active_list_pane_width(
+        &self,
+        max_width: u16,
+        title: &str,
+        signal_column_width: usize,
+    ) -> u16 {
+        let item_width = match self.active_view {
+            AppView::Packages => self
+                .packages
+                .iter()
+                .map(package_list_required_width)
+                .max()
+                .unwrap_or_default(),
+            AppView::MissingOptionalDeps => self
+                .missing_optional_deps
+                .iter()
+                .map(|dep| missing_optional_dep_list_required_width(dep, signal_column_width))
+                .max()
+                .unwrap_or_default(),
+        };
+
+        capped_list_pane_width(
+            max_width,
+            title,
+            item_width,
+            self.active_list_has_selection(),
+        )
+    }
+
+    fn active_list_signal_column_width(&self) -> usize {
+        if self.active_view != AppView::MissingOptionalDeps {
+            return 0;
+        }
+
+        self.missing_optional_deps
+            .iter()
+            .map(|dep| reason_signal_width(&optional_reason_signals(dep)))
+            .max()
+            .unwrap_or_default()
+    }
+}
+
+fn capped_list_pane_width(
+    max_width: u16,
+    title: &str,
+    item_width: usize,
+    has_selection: bool,
+) -> u16 {
+    let highlight_symbol_width = if has_selection {
+        LIST_HIGHLIGHT_SYMBOL_WIDTH
+    } else {
+        0
+    };
+    let item_pane_width = item_width.saturating_add(usize::from(
+        LIST_BLOCK_BORDER_WIDTH + highlight_symbol_width,
+    ));
+    let title_pane_width = Line::from(title.to_owned())
+        .width()
+        .saturating_add(usize::from(LIST_BLOCK_BORDER_WIDTH));
+
+    item_pane_width.max(title_pane_width).min(max_width.into()) as u16
+}
+
+fn list_item_width(list_area: Rect, has_selection: bool) -> usize {
+    let highlight_symbol_width = if has_selection {
+        LIST_HIGHLIGHT_SYMBOL_WIDTH
+    } else {
+        0
+    };
+
+    list_area
+        .width
+        .saturating_sub(LIST_BLOCK_BORDER_WIDTH + highlight_symbol_width)
+        .into()
 }
 
 fn package_list_item(package: &PackageInfo) -> ListItem<'static> {
-    ListItem::new(Line::from(vec![
+    ListItem::new(package_list_line(package))
+}
+
+fn package_list_line(package: &PackageInfo) -> Line<'static> {
+    Line::from(vec![
         Span::styled(
             package.name.clone(),
             Style::default()
@@ -226,7 +340,11 @@ fn package_list_item(package: &PackageInfo) -> ListItem<'static> {
             package.version.clone(),
             Style::default().fg(Color::DarkGray),
         ),
-    ]))
+    ])
+}
+
+fn package_list_required_width(package: &PackageInfo) -> usize {
+    package_list_line(package).width()
 }
 
 fn package_details(package: &PackageInfo) -> Vec<Line<'static>> {
@@ -296,36 +414,81 @@ fn missing_optional_dep_list_item(
     dep: &MissingOptionalDep,
     checked: bool,
     range_selected: bool,
+    row_width: usize,
+    signal_column_width: usize,
 ) -> ListItem<'static> {
+    let item = ListItem::new(missing_optional_dep_list_line(
+        dep,
+        checked,
+        row_width,
+        signal_column_width,
+    ));
+    if range_selected {
+        item.style(Style::default().bg(Color::DarkGray))
+    } else {
+        item
+    }
+}
+
+fn missing_optional_dep_list_line(
+    dep: &MissingOptionalDep,
+    checked: bool,
+    row_width: usize,
+    signal_column_width: usize,
+) -> Line<'static> {
+    let (mut left_spans, right_spans) =
+        missing_optional_dep_list_spans(dep, checked, signal_column_width);
+    let left_width = Line::from(left_spans.clone()).width();
+    let right_width = Line::from(right_spans.clone()).width();
+    let spacer_width = if left_width + right_width < row_width {
+        row_width - left_width - right_width
+    } else {
+        2
+    };
+
+    left_spans.push(Span::raw(" ".repeat(spacer_width)));
+    left_spans.extend(right_spans);
+    Line::from(left_spans)
+}
+
+fn missing_optional_dep_list_required_width(
+    dep: &MissingOptionalDep,
+    signal_column_width: usize,
+) -> usize {
+    let (left_spans, right_spans) =
+        missing_optional_dep_list_spans(dep, false, signal_column_width);
+
+    Line::from(left_spans).width() + 2 + Line::from(right_spans).width()
+}
+
+fn missing_optional_dep_list_spans(
+    dep: &MissingOptionalDep,
+    checked: bool,
+    signal_column_width: usize,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let checkbox = if checked { "[x]" } else { "[ ]" };
     let signals = optional_reason_signals(dep);
-    let mut spans = vec![
+    let mut left_spans = vec![
         Span::styled(checkbox, Style::default().fg(Color::Cyan)),
         Span::raw(" "),
         Span::styled(dep.name.clone(), missing_optional_dep_name_style(&signals)),
     ];
 
     if let Some(version) = &dep.version {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled(
             version.clone(),
             Style::default().fg(Color::DarkGray),
         ));
     }
 
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
+    let mut right_spans = vec![Span::styled(
         format!("wanted by {}", dep.wanted_by.len()),
         Style::default().fg(Color::DarkGray),
-    ));
-    spans.extend(reason_signal_spans(&signals));
+    )];
+    right_spans.extend(reserved_reason_signal_spans(&signals, signal_column_width));
 
-    let item = ListItem::new(Line::from(spans));
-    if range_selected {
-        item.style(Style::default().bg(Color::DarkGray))
-    } else {
-        item
-    }
+    (left_spans, right_spans)
 }
 
 fn missing_optional_dep_details(dep: &MissingOptionalDep) -> Vec<Line<'static>> {
@@ -362,7 +525,7 @@ fn missing_optional_dep_details(dep: &MissingOptionalDep) -> Vec<Line<'static>> 
             "Signals:",
             Style::default().fg(Color::DarkGray),
         )];
-        signal_spans.extend(reason_signal_spans(&signals));
+        signal_spans.extend(full_reason_signal_spans(&signals));
         lines.push(Line::from(""));
         lines.push(Line::from(signal_spans));
         lines.push(Line::from(""));
@@ -378,7 +541,7 @@ fn missing_optional_dep_details(dep: &MissingOptionalDep) -> Vec<Line<'static>> 
             Span::raw(": "),
             Span::from(requester.reason.clone()),
         ];
-        spans.extend(reason_signal_spans(&reason_signals(&requester.reason)));
+        spans.extend(full_reason_signal_spans(&reason_signals(&requester.reason)));
         lines.push(Line::from(spans));
     }
 
@@ -450,34 +613,79 @@ fn is_keyword_character(character: char) -> bool {
 }
 
 fn missing_optional_dep_name_style(signals: &[OptionalReasonSignal]) -> Style {
-    let color = if signals.contains(&OptionalReasonSignal::Alternative) {
-        Color::Magenta
-    } else if signals.contains(&OptionalReasonSignal::Benefit) {
-        Color::Green
-    } else {
-        Color::White
+    let color = match primary_reason_signal(signals) {
+        Some(OptionalReasonSignal::Benefit) => Color::Green,
+        Some(OptionalReasonSignal::Alternative) => Color::Magenta,
+        None => Color::White,
     };
 
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-fn reason_signal_spans(signals: &[OptionalReasonSignal]) -> Vec<Span<'static>> {
-    signals
-        .iter()
-        .flat_map(|signal| {
-            [
-                Span::raw(" "),
-                Span::styled(
-                    format!("[{}]", signal.label()),
-                    signal.style().add_modifier(Modifier::BOLD),
-                ),
-            ]
-        })
-        .collect()
+fn primary_reason_signal(signals: &[OptionalReasonSignal]) -> Option<OptionalReasonSignal> {
+    if signals.contains(&OptionalReasonSignal::Benefit) {
+        Some(OptionalReasonSignal::Benefit)
+    } else if signals.contains(&OptionalReasonSignal::Alternative) {
+        Some(OptionalReasonSignal::Alternative)
+    } else {
+        None
+    }
+}
+
+fn compact_reason_signal_spans(signals: &[OptionalReasonSignal]) -> Vec<Span<'static>> {
+    let Some(signal) = primary_reason_signal(signals) else {
+        return Vec::new();
+    };
+
+    vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("[{}]", signal.short_label()),
+            signal.style().add_modifier(Modifier::BOLD),
+        ),
+    ]
+}
+
+fn full_reason_signal_spans(signals: &[OptionalReasonSignal]) -> Vec<Span<'static>> {
+    let Some(signal) = primary_reason_signal(signals) else {
+        return Vec::new();
+    };
+
+    vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("[{}]", signal.full_label()),
+            signal.style().add_modifier(Modifier::BOLD),
+        ),
+    ]
+}
+
+fn reserved_reason_signal_spans(
+    signals: &[OptionalReasonSignal],
+    reserved_width: usize,
+) -> Vec<Span<'static>> {
+    let mut spans = compact_reason_signal_spans(signals);
+    let width = Line::from(spans.clone()).width();
+    if width < reserved_width {
+        spans.push(Span::raw(" ".repeat(reserved_width - width)));
+    }
+
+    spans
+}
+
+fn reason_signal_width(signals: &[OptionalReasonSignal]) -> usize {
+    Line::from(compact_reason_signal_spans(signals)).width()
 }
 
 impl OptionalReasonSignal {
-    fn label(self) -> &'static str {
+    fn short_label(self) -> &'static str {
+        match self {
+            OptionalReasonSignal::Benefit => "b",
+            OptionalReasonSignal::Alternative => "a",
+        }
+    }
+
+    fn full_label(self) -> &'static str {
         match self {
             OptionalReasonSignal::Benefit => "benefit",
             OptionalReasonSignal::Alternative => "alternative",
@@ -616,9 +824,103 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>();
 
-        assert!(rendered.contains(&"Signals: [benefit] [alternative]".to_owned()));
+        assert!(rendered.contains(&"Signals: [benefit]".to_owned()));
         assert!(rendered.contains(&"  alpha: faster archive scanning [benefit]".to_owned()));
         assert!(rendered.contains(&"  beta: drop-in replacement backend [alternative]".to_owned()));
+    }
+
+    #[test]
+    fn reason_signal_display_prefers_benefit_over_alternative() {
+        let rendered = Line::from(compact_reason_signal_spans(&[
+            OptionalReasonSignal::Alternative,
+            OptionalReasonSignal::Benefit,
+        ]))
+        .to_string();
+
+        assert_eq!(rendered, " [b]");
+    }
+
+    #[test]
+    fn missing_optional_dep_list_aligns_wanted_by_and_signals_to_the_right() {
+        let dep = MissingOptionalDep {
+            name: "ripgrep-all".to_owned(),
+            version: Some("1.0.0-1".to_owned()),
+            description: None,
+            wanted_by: vec![OptionalDepRequester {
+                package_name: "alpha".to_owned(),
+                reason: "faster archive scanning".to_owned(),
+            }],
+        };
+
+        let rendered = missing_optional_dep_list_line(&dep, false, 60, 4).to_string();
+
+        assert_eq!(rendered.len(), 60);
+        assert!(rendered.starts_with("[ ] ripgrep-all  1.0.0-1"));
+        assert!(rendered.ends_with("wanted by 1 [b]"));
+    }
+
+    #[test]
+    fn missing_optional_dep_list_reserves_signal_space_when_absent() {
+        let dep = MissingOptionalDep {
+            name: "tk".to_owned(),
+            version: Some("8.6.16-1".to_owned()),
+            description: None,
+            wanted_by: vec![OptionalDepRequester {
+                package_name: "alpha".to_owned(),
+                reason: "database support".to_owned(),
+            }],
+        };
+
+        let rendered = missing_optional_dep_list_line(&dep, false, 60, 4).to_string();
+
+        assert_eq!(rendered.len(), 60);
+        assert!(rendered.starts_with("[ ] tk  8.6.16-1"));
+        assert!(rendered.ends_with("wanted by 1    "));
+    }
+
+    #[test]
+    fn list_pane_shrinks_to_the_needed_package_width() {
+        let mut app = App::new(vec![
+            PackageInfo {
+                name: "a".to_owned(),
+                version: "1".to_owned(),
+                description: None,
+                optional_deps: Vec::new(),
+            },
+            PackageInfo {
+                name: "a-really-long-package-name".to_owned(),
+                version: "2".to_owned(),
+                description: None,
+                optional_deps: Vec::new(),
+            },
+        ]);
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| frame.render_widget(&mut app, frame.area()))
+            .unwrap();
+
+        assert_eq!(app.last_list_area.unwrap().width, 33);
+    }
+
+    #[test]
+    fn list_pane_keeps_the_old_percentage_width_as_a_cap() {
+        let mut app = App::new(vec![PackageInfo {
+            name: "an-extremely-long-package-name-that-would-overflow-the-old-pane-width"
+                .to_owned(),
+            version: "1".to_owned(),
+            description: None,
+            optional_deps: Vec::new(),
+        }]);
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| frame.render_widget(&mut app, frame.area()))
+            .unwrap();
+
+        assert_eq!(app.last_list_area.unwrap().width, 40);
     }
 
     #[test]
