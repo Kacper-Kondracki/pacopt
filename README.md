@@ -27,6 +27,22 @@ cargo run
 
 When you quit, selected missing optional dependency names are printed to stdout.
 
+## UI preview
+
+The text snapshots used by UI tests are in `tests/fixtures/ui/`.
+
+Print the same rendered preview with:
+
+```sh
+cargo test preview_tested_ui -- --ignored --nocapture
+```
+
+Update the snapshots with:
+
+```sh
+cargo run --example update_ui_preview_snapshot
+```
+
 ## Controls
 
 - `Tab`: switch view

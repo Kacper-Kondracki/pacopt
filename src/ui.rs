@@ -704,8 +704,34 @@ impl OptionalReasonSignal {
 mod tests {
     use super::*;
     use crate::model::{InstalledPackage, OptionalDepRequester};
+    use crate::ui_preview;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn package_view_preview_matches_snapshot() {
+        assert_eq!(
+            ui_preview::package_view(),
+            include_str!("../tests/fixtures/ui/package_view.txt")
+        );
+    }
+
+    #[test]
+    fn missing_optional_deps_view_preview_matches_snapshot() {
+        assert_eq!(
+            ui_preview::missing_optional_deps_view(),
+            include_str!("../tests/fixtures/ui/missing_optional_deps_view.txt")
+        );
+    }
+
+    #[test]
+    #[ignore = "prints the rendered UI preview; run with --ignored --nocapture"]
+    fn preview_tested_ui() {
+        println!("== Package view ==");
+        println!("{}", ui_preview::package_view());
+        println!("== Missing optional dependencies view ==");
+        print!("{}", ui_preview::missing_optional_deps_view());
+    }
 
     #[test]
     fn package_details_include_optional_dependency_reasons() {

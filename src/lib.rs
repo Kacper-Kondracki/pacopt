@@ -8,6 +8,8 @@ mod model;
 mod pacman;
 mod runtime;
 mod ui;
+#[doc(hidden)]
+pub mod ui_preview;
 
 use std::io;
 
